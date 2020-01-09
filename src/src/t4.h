@@ -80,9 +80,9 @@
 #define T4_MAX_READ_DEPTH 16
 #define T4_QID_BASE 1024
 #define T4_MAX_QIDS 256
-#define T4_MAX_NUM_QP (1<<16)
-#define T4_MAX_NUM_CQ (1<<15)
-#define T4_MAX_NUM_PD (1<<15)
+#define T4_MAX_NUM_QP 65536
+#define T4_MAX_NUM_CQ 65536
+#define T4_MAX_NUM_PD 65536
 #define T4_EQ_STATUS_ENTRIES (L1_CACHE_BYTES > 64 ? 2 : 1)
 #define T4_MAX_EQ_SIZE (65520 - T4_EQ_STATUS_ENTRIES)
 #define T4_MAX_IQ_SIZE (65520 - 1)
@@ -104,6 +104,10 @@ struct t4_status_page {
 	__be16 pidx;
 	u8 qp_err;	/* flit 1 - sw owns */
 	u8 db_off;
+	u8 pad;
+	u16 host_wq_pidx;
+	u16 host_cidx;
+	u16 host_pidx;
 };
 
 #define T4_EQ_ENTRY_SIZE 64
@@ -320,6 +324,7 @@ struct t4_sq {
 	u16 pidx;
 	u16 wq_pidx;
 	u16 flags;
+	short flush_cidx;
 };
 
 struct t4_swrqe {
@@ -348,6 +353,7 @@ struct t4_wq {
 	struct c4iw_rdev *rdev;
 	u32 qid_mask;
 	int error;
+	int flushed;
 };
 
 static inline void t4_ma_sync(struct t4_wq *wq, int page_size)
@@ -384,6 +390,8 @@ static inline void t4_rq_produce(struct t4_wq *wq, u8 len16)
 	wq->rq.wq_pidx += DIV_ROUND_UP(len16*16, T4_EQ_ENTRY_SIZE);
 	if (wq->rq.wq_pidx >= wq->rq.size * T4_RQ_NUM_SLOTS)
 		wq->rq.wq_pidx %= wq->rq.size * T4_RQ_NUM_SLOTS;
+	if (!wq->error)
+		wq->rq.queue[wq->rq.size].status.host_pidx = wq->rq.pidx;
 }
 
 static inline void t4_rq_consume(struct t4_wq *wq)
@@ -393,6 +401,8 @@ static inline void t4_rq_consume(struct t4_wq *wq)
 	if (++wq->rq.cidx == wq->rq.size)
 		wq->rq.cidx = 0;
 	assert((wq->rq.cidx != wq->rq.pidx) || wq->rq.in_use == 0);
+	if (!wq->error)
+		wq->rq.queue[wq->rq.size].status.host_cidx = wq->rq.cidx;
 }
 
 static inline int t4_sq_empty(struct t4_wq *wq)
@@ -423,14 +433,21 @@ static inline void t4_sq_produce(struct t4_wq *wq, u8 len16)
 	wq->sq.wq_pidx += DIV_ROUND_UP(len16*16, T4_EQ_ENTRY_SIZE);
 	if (wq->sq.wq_pidx >= wq->sq.size * T4_SQ_NUM_SLOTS)
 		wq->sq.wq_pidx %= wq->sq.size * T4_SQ_NUM_SLOTS;
+	if (!wq->error)
+		wq->sq.queue[wq->sq.size].status.host_pidx = (wq->sq.pidx);
 }
 
 static inline void t4_sq_consume(struct t4_wq *wq)
 {
+	assert(wq->sq.in_use >= 1);
+	if (wq->sq.cidx == wq->sq.flush_cidx)
+                wq->sq.flush_cidx = -1;
 	wq->sq.in_use--;
 	if (++wq->sq.cidx == wq->sq.size)
 		wq->sq.cidx = 0;
 	assert((wq->sq.cidx != wq->sq.pidx) || wq->sq.in_use == 0);
+	if (!wq->error)
+		wq->sq.queue[wq->sq.size].status.host_cidx = wq->sq.cidx;
 }
 
 static inline void t4_ring_sq_db(struct t4_wq *wq, u16 inc)
@@ -470,9 +487,20 @@ static inline void t4_enable_wq_db(struct t4_wq *wq)
 	wq->rq.queue[wq->rq.size].status.db_off = 0;
 }
 
+extern int c4iw_abi_version;
+
 static inline int t4_wq_db_enabled(struct t4_wq *wq)
 {
-	return !wq->rq.queue[wq->rq.size].status.db_off;
+	/*
+	 * If iw_cxgb4 driver supports door bell drop recovery then its
+	 * c4iw_abi_version would be greater than or equal to 2. In such
+	 * case return the status of db_off flag to ring the kernel mode
+	 * DB from user mode library.
+	 */
+	if ( c4iw_abi_version >= 2 )
+		return !wq->rq.queue[wq->rq.size].status.db_off;
+	else
+		return 1;
 }
 
 struct t4_cq {
@@ -514,12 +542,18 @@ static inline int t4_arm_cq(struct t4_cq *cq, int se)
 static inline void t4_swcq_produce(struct t4_cq *cq)
 {
 	cq->sw_in_use++;
+	if (cq->sw_in_use == cq->size) {
+		syslog(LOG_NOTICE, "cxgb4 sw cq overflow cqid %u\n", cq->cqid);
+		cq->error = 1;
+		assert(0);
+	}
 	if (++cq->sw_pidx == cq->size)
 		cq->sw_pidx = 0;
 }
 
 static inline void t4_swcq_consume(struct t4_cq *cq)
 {
+	assert(cq->sw_in_use >= 1);
 	cq->sw_in_use--;
 	if (++cq->sw_cidx == cq->size)
 		cq->sw_cidx = 0;
@@ -540,6 +574,7 @@ static inline void t4_hwcq_consume(struct t4_cq *cq)
 		cq->cidx = 0;
 		cq->gen ^= 1;
 	}
+	((struct t4_status_page *)&cq->queue[cq->size])->host_cidx = cq->cidx;
 }
 
 static inline int t4_valid_cqe(struct t4_cq *cq, struct t4_cqe *cqe)
@@ -558,10 +593,10 @@ static inline int t4_next_hw_cqe(struct t4_cq *cq, struct t4_cqe **cqe)
 		prev_cidx = cq->cidx - 1;
 
 	if (cq->queue[prev_cidx].bits_type_ts != cq->bits_type_ts) {
-		assert(0);
 		ret = -EOVERFLOW;
 		syslog(LOG_NOTICE, "cxgb4 cq overflow cqid %u\n", cq->cqid);
 		cq->error = 1;
+		assert(0);
 	} else if (t4_valid_cqe(cq, &cq->queue[cq->cidx])) {
 		*cqe = &cq->queue[cq->cidx];
 		ret = 0;
@@ -572,6 +607,12 @@ static inline int t4_next_hw_cqe(struct t4_cq *cq, struct t4_cqe **cqe)
 
 static inline struct t4_cqe *t4_next_sw_cqe(struct t4_cq *cq)
 {
+	if (cq->sw_in_use == cq->size) {
+		syslog(LOG_NOTICE, "cxgb4 sw cq overflow cqid %u\n", cq->cqid);
+		cq->error = 1;
+		assert(0);
+		return NULL;
+	}
 	if (cq->sw_in_use)
 		return &cq->sw_queue[cq->sw_cidx];
 	return NULL;

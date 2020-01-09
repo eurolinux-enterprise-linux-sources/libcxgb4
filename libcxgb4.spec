@@ -1,6 +1,6 @@
 Name: libcxgb4
-Version: 1.1.1
-Release: 3%{?dist}
+Version: 1.2.0
+Release: 1%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
 License: GPLv2 or BSD
@@ -15,7 +15,7 @@ ExcludeArch: s390 s390x
 Provides: libibverbs-driver.%{_arch}
 %description
 Userspace hardware driver for use with the libibverbs InfiniBand/iWARP verbs
-library.  This driver enables Chelsio T4 based iWARP capable ethernet devices.
+library.  This driver enables Chelsio T4 based iWARP capable Ethernet devices.
 
 %package static
 Summary: Static version of the libcxgb4 driver
@@ -54,6 +54,11 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
+* Mon Jan 23 2012 Doug Ledford <dledford@redhat.com> - 1.2.0-1
+- Update to latest upstream release while rebuilding against latest
+  libibverbs
+- Related: bz750609
+
 * Mon Jul 25 2011 Doug Ledford <dledford@redhat.com> - 1.1.1-3
 - Add missing arch macro to libibverbs-driver provide
 - Related: bz725016

@@ -93,43 +93,179 @@ static void insert_sq_cqe(struct t4_wq *wq, struct t4_cq *cq,
 	t4_swcq_produce(cq);
 }
 
-int c4iw_flush_sq(struct t4_wq *wq, struct t4_cq *cq, int count)
+void c4iw_flush_sq(struct c4iw_qp *qhp, int count)
 {
-	int flushed = 0;
+	struct t4_wq *wq = &qhp->wq;
+	struct c4iw_cq *chp = to_c4iw_cq(qhp->ibv_qp.send_cq);
+	struct t4_cq *cq = &chp->cq;
 	struct t4_swsqe *swsqe = &wq->sq.sw_sq[wq->sq.cidx + count];
 	int in_use = wq->sq.in_use - count;
+	int error = (qhp->ibv_qp.state != IBV_QPS_SQD &&
+		     qhp->ibv_qp.state != IBV_QPS_INIT);
 
 	BUG_ON(in_use < 0);
+
 	while (in_use--) {
-		swsqe->signaled = 0;
-		insert_sq_cqe(wq, cq, swsqe);
-		swsqe++;
-		if (swsqe == (wq->sq.sw_sq + wq->sq.size))
-			swsqe = wq->sq.sw_sq;
-		flushed++;
+		if (error) {
+			swsqe->signaled = 0;
+			insert_sq_cqe(wq, cq, swsqe);
+			swsqe++;
+			if (swsqe == (wq->sq.sw_sq + wq->sq.size))
+				swsqe = wq->sq.sw_sq;
+		} else {
+			t4_sq_consume(wq);
+		}
 	}
-	return flushed;
+}
+
+static int flush_completed_wrs(struct t4_wq *wq, struct t4_cq *cq, u16 cidx)
+{
+	struct t4_swsqe *swsqe;
+	int count = wq->sq.in_use;
+	int unsignaled = 0;
+	int ret_cidx = cidx;
+
+	swsqe = &wq->sq.sw_sq[cidx];
+	while (count--) {
+		if (!swsqe->signaled) {
+			if (++cidx == wq->sq.size)
+				cidx = 0;
+			swsqe = &wq->sq.sw_sq[cidx];
+			unsignaled++;
+		} else if (swsqe->complete) {
+
+			/*
+			 * Insert this completed cqe into the swcq.
+			 */
+			PDBG("%s moving cqe into swcq sq idx %u cq idx %u\n",
+			     __func__, cidx, cq->sw_pidx);
+
+			swsqe->cqe.header |= htonl(V_CQE_SWCQE(1));
+			cq->sw_queue[cq->sw_pidx] = swsqe->cqe;
+			t4_swcq_produce(cq);
+			swsqe->signaled = 0;
+			wq->sq.in_use -= unsignaled;
+			unsignaled = 0;
+			if (++cidx == wq->sq.size)
+				cidx = 0;
+			swsqe = &wq->sq.sw_sq[cidx];
+			ret_cidx = cidx;
+		} else
+			break;
+	}
+	return ret_cidx;
+}
+
+static void create_read_req_cqe(struct t4_wq *wq, struct t4_cqe *hw_cqe,
+				struct t4_cqe *read_cqe)
+{
+	read_cqe->u.scqe.cidx = wq->sq.oldest_read->idx;
+	read_cqe->len = ntohl(wq->sq.oldest_read->read_len);
+	read_cqe->header = htonl(V_CQE_QPID(CQE_QPID(hw_cqe)) |
+				 V_CQE_SWCQE(SW_CQE(hw_cqe)) |
+				 V_CQE_OPCODE(FW_RI_READ_REQ) |
+				 V_CQE_TYPE(1));
+	read_cqe->bits_type_ts = hw_cqe->bits_type_ts;
+}
+
+static void advance_oldest_read(struct t4_wq *wq)
+{
+
+	u32 rptr = wq->sq.oldest_read - wq->sq.sw_sq + 1;
+
+	if (rptr == wq->sq.size)
+		rptr = 0;
+	while (rptr != wq->sq.pidx) {
+		wq->sq.oldest_read = &wq->sq.sw_sq[rptr];
+
+		if (wq->sq.oldest_read->opcode == FW_RI_READ_REQ)
+			return;
+		if (++rptr == wq->sq.size)
+			rptr = 0;
+	}
+	wq->sq.oldest_read = NULL;
 }
 
 /*
  * Move all CQEs from the HWCQ into the SWCQ.
+ * Deal with out-of-order and/or completions that complete
+ * prior unsignalled WRs.
  */
-void c4iw_flush_hw_cq(struct t4_cq *cq)
+void c4iw_flush_hw_cq(struct c4iw_cq *chp)
 {
-	struct t4_cqe *cqe, *swcqe;
+	struct t4_cqe *hw_cqe, *swcqe, read_cqe;
+	struct c4iw_qp *qhp;
+	struct t4_swsqe *swsqe;
 	int ret;
 
-	PDBG("%s cq %p cqid 0x%x\n", __func__, cq, cq->cqid);
-	ret = t4_next_hw_cqe(cq, &cqe);
+	PDBG("%s  cqid 0x%x\n", __func__, cq->cqid);
+	ret = t4_next_hw_cqe(&chp->cq, &hw_cqe);
+
+	/*
+	 * This logic is similar to poll_cq(), but not quite the same
+	 * unfortunately.  Need to move pertinent HW CQEs to the SW CQ but
+	 * also do any translation magic that poll_cq() normally does.
+	 */
 	while (!ret) {
-		PDBG("%s flushing hwcq cidx 0x%x swcq pidx 0x%x\n",
-		     __func__, cq->cidx, cq->sw_pidx);
-		swcqe = &cq->sw_queue[cq->sw_pidx];
-		*swcqe = *cqe;
-		swcqe->header |= cpu_to_be32(V_CQE_SWCQE(1));
-		t4_swcq_produce(cq);
-		t4_hwcq_consume(cq);
-		ret = t4_next_hw_cqe(cq, &cqe);
+		qhp = get_qhp(chp->rhp, CQE_QPID(hw_cqe));
+		if (qhp->wq.sq.flush_cidx == -1)
+			qhp->wq.sq.flush_cidx = qhp->wq.sq.cidx;
+		/*
+		 * drop CQEs with no associated QP
+		 */
+		if (qhp == NULL)
+			goto next_cqe;
+
+		if (CQE_OPCODE(hw_cqe) == FW_RI_TERMINATE)
+			goto next_cqe;
+
+		if (CQE_OPCODE(hw_cqe) == FW_RI_READ_RESP) {
+
+			/*
+			 * If we have reached here because of async
+			 * event or other error, and have egress error
+			 * then drop
+			 */
+			if (CQE_TYPE(hw_cqe) == 1) {
+				syslog(LOG_CRIT, "%s: got egress error in \
+					read-response, dropping!\n", __func__);
+				goto next_cqe;
+			}
+
+			/*
+			 * drop peer2peer RTR reads.
+			 */
+			if (CQE_WRID_STAG(hw_cqe) == 1)
+				goto next_cqe;
+
+			/*
+			 * Don't write to the HWCQ, create a new read req CQE
+			 * in local memory and move it into the swcq.
+			 */
+			create_read_req_cqe(&qhp->wq, hw_cqe, &read_cqe);
+			hw_cqe = &read_cqe;
+			advance_oldest_read(&qhp->wq);
+		}
+
+		/* if its a SQ completion, then do the magic to move all the
+		 * unsignaled and now in-order completions into the swcq.
+		 */
+		if (SQ_TYPE(hw_cqe)) {
+			swsqe = &qhp->wq.sq.sw_sq[CQE_WRID_SQ_IDX(hw_cqe)];
+			swsqe->cqe = *hw_cqe;
+			swsqe->complete = 1;
+			qhp->wq.sq.flush_cidx =
+				flush_completed_wrs(&qhp->wq, &chp->cq,
+						(uint16_t)qhp->wq.sq.flush_cidx);
+		} else {
+			swcqe = &chp->cq.sw_queue[chp->cq.sw_pidx];
+			*swcqe = *hw_cqe;
+			swcqe->header |= cpu_to_be32(V_CQE_SWCQE(1));
+			t4_swcq_produce(&chp->cq);
+		}
+next_cqe:
+		t4_hwcq_consume(&chp->cq);
+		ret = t4_next_hw_cqe(&chp->cq, &hw_cqe);
 	}
 }
 
@@ -166,6 +302,7 @@ void c4iw_count_scqes(struct t4_cq *cq, struct t4_wq *wq, int *count)
 		if (++ptr == cq->size)
 			ptr = 0;
 	}
+
 	PDBG("%s cq %p count %d\n", __func__, cq, *count);
 }
 
@@ -185,70 +322,6 @@ void c4iw_count_rcqes(struct t4_cq *cq, struct t4_wq *wq, int *count)
 			ptr = 0;
 	}
 	PDBG("%s cq %p count %d\n", __func__, cq, *count);
-}
-
-static void flush_completed_wrs(struct t4_wq *wq, struct t4_cq *cq)
-{
-	struct t4_swsqe *swsqe;
-	u16 ptr = wq->sq.cidx;
-	int count = wq->sq.in_use;
-	int unsignaled = 0;
-
-	swsqe = &wq->sq.sw_sq[ptr];
-	while (count--)
-		if (!swsqe->signaled) {
-			if (++ptr == wq->sq.size)
-				ptr = 0;
-			swsqe = &wq->sq.sw_sq[ptr];
-			unsignaled++;
-		} else if (swsqe->complete) {
-
-			/*
-			 * Insert this completed cqe into the swcq.
-			 */
-			PDBG("%s moving cqe into swcq sq idx %u cq idx %u\n",
-			     __func__, ptr, cq->sw_pidx);
-			swsqe->cqe.header |= htonl(V_CQE_SWCQE(1));
-			cq->sw_queue[cq->sw_pidx] = swsqe->cqe;
-			t4_swcq_produce(cq);
-			swsqe->signaled = 0;
-			wq->sq.in_use -= unsignaled;
-			break;
-		} else
-			break;
-}
-
-static void create_read_req_cqe(struct t4_wq *wq, struct t4_cqe *hw_cqe,
-				struct t4_cqe *read_cqe)
-{
-	read_cqe->u.scqe.cidx = wq->sq.oldest_read->idx;
-	read_cqe->len = ntohl(wq->sq.oldest_read->read_len);
-	read_cqe->header = htonl(V_CQE_QPID(CQE_QPID(hw_cqe)) |
-				 V_CQE_SWCQE(SW_CQE(hw_cqe)) |
-				 V_CQE_OPCODE(FW_RI_READ_REQ) |
-				 V_CQE_TYPE(1));
-	read_cqe->bits_type_ts = hw_cqe->bits_type_ts;
-}
-
-/*
- * Return a ptr to the next read wr in the SWSQ or NULL.
- */
-static void advance_oldest_read(struct t4_wq *wq)
-{
-
-	u32 rptr = wq->sq.oldest_read - wq->sq.sw_sq + 1;
-
-	if (rptr == wq->sq.size)
-		rptr = 0;
-	while (rptr != wq->sq.pidx) {
-		wq->sq.oldest_read = &wq->sq.sw_sq[rptr];
-
-		if (wq->sq.oldest_read->opcode == FW_RI_READ_REQ)
-			return;
-		if (++rptr == wq->sq.size)
-			rptr = 0;
-	}
-	wq->sq.oldest_read = NULL;
 }
 
 static void dump_cqe(void *arg)
@@ -316,12 +389,26 @@ static int poll_cq(struct t4_wq *wq, struct t4_cq *cq, struct t4_cqe *cqe,
 	if (CQE_OPCODE(hw_cqe) == FW_RI_READ_RESP) {
 
 		/*
+		 * If we have reached here because of async
+		 * event or other error, and have egress error
+		 * then drop
+		 */
+		if (CQE_TYPE(hw_cqe) == 1) {
+			syslog(LOG_CRIT, "%s: got egress error in \
+				read-response, dropping!\n", __func__);
+			if (CQE_STATUS(hw_cqe))
+				t4_set_wq_in_error(wq);
+			ret = -EAGAIN;
+			goto skip_cqe;
+		}
+
+		/*
 		 * If this is an unsolicited read response, then the read
 		 * was generated by the kernel driver as part of peer-2-peer
 		 * connection setup, or a target read response failure.
 		 * So skip the completion.
 		 */
-		if (!wq->sq.oldest_read) {
+		if (CQE_WRID_STAG(hw_cqe) == 1) {
 			if (CQE_STATUS(hw_cqe))
 				t4_set_wq_in_error(wq);
 			ret = -EAGAIN;
@@ -338,12 +425,12 @@ static int poll_cq(struct t4_wq *wq, struct t4_cq *cq, struct t4_cqe *cqe,
 	}
 
 	if (CQE_STATUS(hw_cqe) || t4_wq_in_error(wq)) {
-		*cqe_flushed = t4_wq_in_error(wq);
+		*cqe_flushed = (CQE_STATUS(hw_cqe) == T4_ERR_SWFLUSH);
 		wq->error = 1;
 
-		if (!*cqe_flushed) {
+		if (!*cqe_flushed && CQE_STATUS(hw_cqe))
 			dump_cqe(hw_cqe);
-		}
+
 		BUG_ON((cqe_flushed == 0) && !SW_CQE(hw_cqe));
 		goto proc_cqe;
 	}
@@ -424,7 +511,7 @@ flush_wq:
 	/*
 	 * Flush any completed cqes that are now in-order.
 	 */
-	flush_completed_wrs(wq, cq);
+	(void)flush_completed_wrs(wq, cq, wq->sq.cidx);
 
 skip_cqe:
 	if (SW_CQE(hw_cqe)) {
@@ -519,7 +606,7 @@ proc_cqe:
 	/*
 	 * Flush any completed cqes that are now in-order.
 	 */
-	flush_completed_wrs(wq, cq);
+	flush_completed_wrs(wq, cq, wq->sq.cidx);
 
 	if (SW_CQE(hw_cqe)) {
 		PDBG("%s cq %p cqid 0x%x skip sw cqe cidx %u\n",
@@ -554,8 +641,24 @@ static int c4iw_poll_cq_one(struct c4iw_cq *chp, struct ibv_wc *wc)
 
 	ret = t4_next_cqe(&chp->cq, &rd_cqe);
 
-	if (ret)
+	if (ret) {
+#ifdef STALL_DETECTION
+		if (ret == -ENODATA && stall_to && !chp->dumped) {
+			struct timeval t;
+
+			gettimeofday(&t, NULL);
+			if ((t.tv_sec - chp->time.tv_sec) > stall_to) {
+				dump_state();
+				chp->dumped = 1;
+			}
+		}
+#endif
 		return ret;
+	}
+
+#ifdef STALL_DETECTION
+	gettimeofday(&chp->time, NULL);
+#endif
 
 	qhp = get_qhp(chp->rhp, CQE_QPID(rd_cqe));
 	if (!qhp)

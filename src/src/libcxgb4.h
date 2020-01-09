@@ -38,6 +38,7 @@
 #include <string.h>
 #include <syslog.h>
 #include <sys/errno.h>
+#include <sys/time.h>
 #include <infiniband/driver.h>
 #include <infiniband/arch.h>
 #include "queue.h"
@@ -88,6 +89,10 @@ struct c4iw_cq {
 	pthread_spinlock_t lock;
 #ifdef SIM
 	int armed;
+#endif
+#ifdef STALL_DETECTION
+	struct timeval time;
+	int dumped;
 #endif
 };
 
@@ -206,9 +211,9 @@ int c4iw_attach_mcast(struct ibv_qp *qp, const union ibv_gid *gid,
 int c4iw_detach_mcast(struct ibv_qp *qp, const union ibv_gid *gid,
 			     uint16_t lid);
 void c4iw_async_event(struct ibv_async_event *event);
-void c4iw_flush_hw_cq(struct t4_cq *cq);
+void c4iw_flush_hw_cq(struct c4iw_cq *chp);
 int c4iw_flush_rq(struct t4_wq *wq, struct t4_cq *cq, int count);
-int c4iw_flush_sq(struct t4_wq *wq, struct t4_cq *cq, int count);
+void c4iw_flush_sq(struct c4iw_qp *qhp, int count);
 void c4iw_count_scqes(struct t4_cq *cq, struct t4_wq *wq, int *count);
 void c4iw_count_rcqes(struct t4_cq *cq, struct t4_wq *wq, int *count);
 
@@ -250,6 +255,11 @@ extern struct c4iw_stats c4iw_stats;
 
 #ifndef IBV_QPT_RAW_ETY
 #define IBV_QPT_RAW_ETY (enum ibv_qp_type)7 /* XXX */
+#endif
+
+#ifdef STALL_DETECTION
+void dump_state();
+extern int stall_to;
 #endif
 
 #endif				/* IWCH_H */

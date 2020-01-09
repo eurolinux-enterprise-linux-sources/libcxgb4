@@ -41,6 +41,7 @@
 #include <sys/mman.h>
 #include <netinet/in.h>
 #include <inttypes.h>
+#include <assert.h>
 
 #include "libcxgb4.h"
 #include "cxgb4-abi.h"
@@ -185,6 +186,9 @@ struct ibv_cq *c4iw_create_cq(struct ibv_context *context, int cqe,
 		goto err1;
 
 	pthread_spin_init(&chp->lock, PTHREAD_PROCESS_PRIVATE);
+#ifdef STALL_DETECTION
+	gettimeofday(&chp->time, NULL);
+#endif
 	chp->rhp = dev;
 	chp->cq.qid_mask = resp.qid_mask;
 	chp->cq.cqid = resp.cqid;
@@ -229,16 +233,16 @@ err1:
 
 int c4iw_resize_cq(struct ibv_cq *ibcq, int cqe)
 {
-#ifdef SIM
+#if 0
 	int ret;
 
 	struct ibv_resize_cq cmd;
 	struct ibv_resize_cq_resp resp;
 	ret = ibv_cmd_resize_cq(ibcq, cqe, &cmd, sizeof cmd, &resp, sizeof resp);
 	PDBG("%s ret %d\n", __func__, ret);
-	return 0;
+	return ret;
 #else
-	return ENOSYS;
+	return -ENOSYS;
 #endif
 }
 
@@ -372,8 +376,6 @@ static struct ibv_qp *create_qp_v0(struct ibv_pd *pd,
 	pthread_spin_unlock(&dev->lock);
 	INC_STAT(qp);
 	return &qhp->ibv_qp;
-err9:
-	free(qhp->wq.rq.sw_rq);
 err8:
 	free(qhp->wq.sq.sw_sq);
 err7:
@@ -425,6 +427,7 @@ static struct ibv_qp *create_qp(struct ibv_pd *pd,
 	qhp->wq.sq.size = resp.sq_size;
 	qhp->wq.sq.memsize = resp.sq_memsize;
 	qhp->wq.sq.flags = resp.flags & C4IW_QPF_ONCHIP ? T4_SQ_ONCHIP : 0;
+	qhp->wq.sq.flush_cidx = -1;
 	qhp->wq.rq.msn = 1;
 	qhp->wq.rq.qid = resp.rqid;
 	qhp->wq.rq.size = resp.rq_size;
