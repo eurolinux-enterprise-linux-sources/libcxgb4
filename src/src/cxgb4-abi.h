@@ -38,6 +38,7 @@ struct c4iw_alloc_ucontext_resp {
 	struct ibv_get_context_resp ibv_resp;
 	__u64 status_page_key;
 	__u32 status_page_size;
+	__u32 reserved;
 };
 
 struct c4iw_alloc_pd_resp {
@@ -53,6 +54,7 @@ struct c4iw_create_cq_resp {
 	__u32 cqid;
 	__u32 size;
 	__u32 qid_mask;
+	__u32 reserved;
 };
 
 enum {

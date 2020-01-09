@@ -1,7 +1,7 @@
-%define ver 1.3.3
+%define ver 1.3.5
 
 Name: libcxgb4
-Version: 1.3.3
+Version: 1.3.5
 Release: 1%{?dist}
 Summary: Chelsio T4/T5 RNIC Open Fabrics Userspace Library
 

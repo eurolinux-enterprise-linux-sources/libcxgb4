@@ -125,9 +125,14 @@ static struct ibv_context *c4iw_alloc_context(struct ibv_device *ibdev,
 	context->ibv_ctx.cmd_fd = cmd_fd;
 
 	resp.status_page_size = 0;
+	resp.reserved = 0;
 	if (ibv_cmd_get_context(&context->ibv_ctx, &cmd, sizeof cmd,
 				&resp.ibv_resp, sizeof resp))
 		goto err_free;
+
+	if (resp.reserved)
+		PDBG("%s c4iw_alloc_ucontext_resp reserved field modified by kernel\n",
+		     __FUNCTION__);
 
 	context->status_page_size = resp.status_page_size;
 	if (resp.status_page_size) {
@@ -171,8 +176,8 @@ static struct ibv_context *c4iw_alloc_context(struct ibv_device *ibdev,
 		if (!rhp->mmid2ptr) {
 			goto err_unmap;
 		}
-		rhp->max_qp = T4_QID_BASE + attr.max_qp;
-		rhp->qpid2ptr = calloc(T4_QID_BASE + attr.max_qp, sizeof(void *));
+		rhp->max_qp = T4_QID_BASE + attr.max_cq;
+		rhp->qpid2ptr = calloc(T4_QID_BASE + attr.max_cq, sizeof(void *));
 		if (!rhp->qpid2ptr) {
 			goto err_unmap;
 		}

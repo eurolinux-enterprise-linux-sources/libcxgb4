@@ -1,14 +1,14 @@
 Name: libcxgb4
-Version: 1.3.3
+Version: 1.3.5
 Release: 1%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
 License: GPLv2 or BSD
 Url: http://www.openfabrics.org/
 Source: http://www.openfabrics.org/downloads/cxgb4/%{name}-%{version}.tar.gz
-Source1: libcxgb4-modprobe.conf
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: libibverbs-devel >= 1.1.3, libtool
+Requires: rdma
 Obsoletes: %{name}-devel
 ExcludeArch: s390 s390x
 Provides: libibverbs-driver.%{_arch}
@@ -33,7 +33,6 @@ Static version of libcxgb4 that may be linked directly to an application.
 %install
 rm -rf $RPM_BUILD_ROOT
 %{__make} install DESTDIR=$RPM_BUILD_ROOT
-install -p -m 644 -D %{SOURCE1} ${RPM_BUILD_ROOT}%{_sysconfdir}/modprobe.d/libcxgb4.conf
 # remove unpackaged files from the buildroot
 rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
 
@@ -44,7 +43,6 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root,-)
 %{_libdir}/*.so*
 %{_sysconfdir}/libibverbs.d/*.driver
-%{_sysconfdir}/modprobe.d/libcxgb4.conf
 %doc AUTHORS COPYING README
 
 %files static
@@ -52,6 +50,12 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
+* Thu Mar 12 2015 Doug Ledford <dledford@redhat.com> - 1.3.5-1
+- Update to latest upstream release
+- Move modprobe setup to rdma package
+- Resolves: bz1165842
+- Related: bz1163527
+
 * Wed Jun 18 2014 Doug Ledford <dledford@redhat.com> - 1.3.3-1
 - Bump and rebuild against new libibverbs, update our sources while we
   are at it

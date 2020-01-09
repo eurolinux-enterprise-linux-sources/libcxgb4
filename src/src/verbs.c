@@ -181,11 +181,16 @@ struct ibv_cq *c4iw_create_cq(struct ibv_context *context, int cqe,
 		return NULL;
 	}
 
+	resp.reserved = 0;
 	ret = ibv_cmd_create_cq(context, cqe, channel, comp_vector,
 				&chp->ibv_cq, &cmd, sizeof cmd,
 				&resp.ibv_resp, sizeof resp);
 	if (ret)
 		goto err1;
+
+	if (resp.reserved)
+		PDBG("%s c4iw_create_cq_resp reserved field modified by kernel\n",
+		     __FUNCTION__);
 
 	pthread_spin_init(&chp->lock, PTHREAD_PROCESS_PRIVATE);
 #ifdef STALL_DETECTION
@@ -610,10 +615,19 @@ int c4iw_destroy_qp(struct ibv_qp *ibqp)
 	return 0;
 }
 
-int c4iw_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
+int c4iw_query_qp(struct ibv_qp *ibqp, struct ibv_qp_attr *attr,
 		  int attr_mask, struct ibv_qp_init_attr *init_attr)
 {
-	return ENOSYS;
+	struct ibv_query_qp cmd;
+	struct c4iw_qp *qhp = to_c4iw_qp(ibqp);
+	int ret;
+
+	pthread_spin_lock(&qhp->lock);
+	if (t4_wq_in_error(&qhp->wq))
+		c4iw_flush_qp(qhp);
+	ret = ibv_cmd_query_qp(ibqp, attr, attr_mask, init_attr, &cmd, sizeof cmd);
+	pthread_spin_unlock(&qhp->lock);
+	return ret;
 }
 
 struct ibv_ah *c4iw_create_ah(struct ibv_pd *pd, struct ibv_ah_attr *attr)
