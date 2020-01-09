@@ -1,5 +1,5 @@
 Name: libcxgb4
-Version: 1.2.0
+Version: 1.3.3
 Release: 1%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
@@ -7,7 +7,6 @@ License: GPLv2 or BSD
 Url: http://www.openfabrics.org/
 Source: http://www.openfabrics.org/downloads/cxgb4/%{name}-%{version}.tar.gz
 Source1: libcxgb4-modprobe.conf
-Patch0:  libcxgb4-1.1.0-type.patch
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: libibverbs-devel >= 1.1.3, libtool
 Obsoletes: %{name}-devel
@@ -26,7 +25,6 @@ Static version of libcxgb4 that may be linked directly to an application.
 
 %prep
 %setup -q
-%patch0 -p1
 
 %build
 %configure
@@ -54,6 +52,11 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
+* Wed Jun 18 2014 Doug Ledford <dledford@redhat.com> - 1.3.3-1
+- Bump and rebuild against new libibverbs, update our sources while we
+  are at it
+- Related: bz854655
+
 * Mon Jan 23 2012 Doug Ledford <dledford@redhat.com> - 1.2.0-1
 - Update to latest upstream release while rebuilding against latest
   libibverbs

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010 Chelsio, Inc. All rights reserved.
+ * Copyright (c) 2006-2014 Chelsio, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -44,27 +44,35 @@
 #include "queue.h"
 #include "t4.h"
 
-extern int c4iw_page_size;
-
-enum c4iw_hca_type {
-	CHELSIO_T4 = 0,
-};
+extern unsigned long c4iw_page_size;
+extern unsigned long c4iw_page_shift;
+extern unsigned long c4iw_page_mask;
 
 struct c4iw_mr;
 
 struct c4iw_dev {
 	struct ibv_device ibv_dev;
-	enum c4iw_hca_type hca_type;
+	unsigned chip_version;
+	int max_mr;
 	struct c4iw_mr **mmid2ptr;
+	int max_qp;
 	struct c4iw_qp **qpid2ptr;
+	int max_cq;
 	struct c4iw_cq **cqid2ptr;
 	pthread_spinlock_t lock;
 	SLIST_ENTRY(c4iw_dev) list;
 	int abi_version;
 };
 
+static inline int dev_is_t5(struct c4iw_dev *dev)
+{
+	return dev->chip_version == CHELSIO_T5;
+}
+
 struct c4iw_context {
 	struct ibv_context ibv_ctx;
+	struct t4_dev_status_page *status_page;
+	int status_page_size;
 };
 
 struct c4iw_pd {
@@ -87,9 +95,6 @@ struct c4iw_cq {
 	struct c4iw_dev *rhp;
 	struct t4_cq cq;
 	pthread_spinlock_t lock;
-#ifdef SIM
-	int armed;
-#endif
 #ifdef STALL_DETECTION
 	struct timeval time;
 	int dumped;
@@ -113,7 +118,7 @@ static inline struct c4iw_dev *to_c4iw_dev(struct ibv_device *ibdev)
 	return to_c4iw_xxx(dev, dev);
 }
 
-static inline struct c4iw_context *to_c4iw_ctx(struct ibv_context *ibctx)
+static inline struct c4iw_context *to_c4iw_context(struct ibv_context *ibctx)
 {
 	return to_c4iw_xxx(ctx, context);
 }
@@ -213,17 +218,8 @@ int c4iw_detach_mcast(struct ibv_qp *qp, const union ibv_gid *gid,
 void c4iw_async_event(struct ibv_async_event *event);
 void c4iw_flush_hw_cq(struct c4iw_cq *chp);
 int c4iw_flush_rq(struct t4_wq *wq, struct t4_cq *cq, int count);
-void c4iw_flush_sq(struct c4iw_qp *qhp, int count);
-void c4iw_count_scqes(struct t4_cq *cq, struct t4_wq *wq, int *count);
+void c4iw_flush_sq(struct c4iw_qp *qhp);
 void c4iw_count_rcqes(struct t4_cq *cq, struct t4_wq *wq, int *count);
-
-#ifdef DEBUG
-#define DBGLOG(s)
-#define PDBG(fmt, args...) do {syslog(LOG_DEBUG, fmt, ##args); } while (0)
-#else
-#define DBGLOG(s)
-#define PDBG(fmt, args...) do {} while (0)
-#endif
 
 #define FW_MAJ 0
 #define FW_MIN 0
@@ -253,13 +249,11 @@ extern struct c4iw_stats c4iw_stats;
 #define INC_STAT(a)
 #endif
 
-#ifndef IBV_QPT_RAW_ETY
-#define IBV_QPT_RAW_ETY (enum ibv_qp_type)7 /* XXX */
-#endif
-
 #ifdef STALL_DETECTION
 void dump_state();
 extern int stall_to;
 #endif
+
+#define uninitialized_var(x) x = x
 
 #endif				/* IWCH_H */

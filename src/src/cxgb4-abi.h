@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010 Chelsio, Inc. All rights reserved.
+ * Copyright (c) 2006-2014 Chelsio, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -36,6 +36,8 @@
 
 struct c4iw_alloc_ucontext_resp {
 	struct ibv_get_context_resp ibv_resp;
+	__u64 status_page_key;
+	__u32 status_page_size;
 };
 
 struct c4iw_alloc_pd_resp {

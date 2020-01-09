@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010 Chelsio, Inc. All rights reserved.
+ * Copyright (c) 2006-2014 Chelsio, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -154,6 +154,8 @@ static int build_rdma_send(struct t4_sq *sq, union t4_wr *wqe,
 		wqe->send.sendop_pkd = cpu_to_be32(
 			V_FW_RI_SEND_WR_SENDOP(FW_RI_SEND));
 	wqe->send.stag_inv = 0;
+	wqe->send.r3 = 0;
+	wqe->send.r4 = 0;
 
 	plen = 0;
 	if (wr->num_sge) {
@@ -299,11 +301,11 @@ static void ring_kernel_db(struct c4iw_qp *qhp, u32 qid, u16 idx)
 	assert(!ret);
 }
 
-static int post_send_rc(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
+int c4iw_post_send(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
 	           struct ibv_send_wr **bad_wr)
 {
 	int err = 0;
-	u8 len16;
+	u8 uninitialized_var(len16);
 	enum fw_wr_opcodes fw_opcode;
 	enum fw_ri_wr_flags fw_flags;
 	struct c4iw_qp *qhp;
@@ -334,7 +336,7 @@ static int post_send_rc(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
 		fw_flags = 0;
 		if (wr->send_flags & IBV_SEND_SOLICITED)
 			fw_flags |= FW_RI_SOLICITED_EVENT_FLAG;
-		if (wr->send_flags & IBV_SEND_SIGNALED)
+		if (wr->send_flags & IBV_SEND_SIGNALED || qhp->sq_sig_all)
 			fw_flags |= FW_RI_COMPLETION_FLAG;
 		swsqe = &qhp->wq.sq.sw_sq[qhp->wq.sq.pidx];
 		switch (wr->opcode) {
@@ -375,7 +377,9 @@ static int post_send_rc(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
 		}
 		swsqe->idx = qhp->wq.sq.pidx;
 		swsqe->complete = 0;
-		swsqe->signaled = (wr->send_flags & IBV_SEND_SIGNALED);
+		swsqe->signaled = (wr->send_flags & IBV_SEND_SIGNALED) ||
+				  qhp->sq_sig_all;
+		swsqe->flushed = 0;
 		swsqe->wr_id = wr->wr_id;
 
 		init_wr_hdr(wqe, qhp->wq.sq.pidx, fw_opcode, fw_flags, len16);
@@ -388,9 +392,10 @@ static int post_send_rc(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
 		t4_sq_produce(&qhp->wq, len16);
 		idx += DIV_ROUND_UP(len16*16, T4_EQ_ENTRY_SIZE);
 	}
-	if (t4_wq_db_enabled(&qhp->wq))
-		t4_ring_sq_db(&qhp->wq, idx);
-	else
+	if (t4_wq_db_enabled(&qhp->wq)) {
+		t4_ring_sq_db(&qhp->wq, idx, dev_is_t5(qhp->rhp),
+			      len16, wqe);
+	} else
 		ring_kernel_db(qhp, qhp->wq.sq.qid, idx);
 	qhp->wq.sq.queue[qhp->wq.sq.size].status.host_wq_pidx = \
 			(qhp->wq.sq.wq_pidx);
@@ -398,69 +403,7 @@ static int post_send_rc(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
 	return err;
 }
 
-static int post_send_raw(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
-			 struct ibv_send_wr **bad_wr)
-{
-#ifdef SIM
-	int err = 0;
-	struct c4iw_qp *qhp;
-	u32 num_wrs;
-	struct t4_swsqe *swsqe;
-	int sim_send(struct c4iw_qp *qp, struct ibv_send_wr *wr);
-
-	qhp = to_c4iw_qp(ibqp);
-	pthread_spin_lock(&qhp->lock);
-	if (t4_wq_in_error(&qhp->wq)) {
-		pthread_spin_unlock(&qhp->lock);
-		return -EINVAL;
-	}
-	num_wrs = t4_sq_avail(&qhp->wq);
-	if (num_wrs == 0) {
-		pthread_spin_unlock(&qhp->lock);
-		return ENOMEM;
-	}
-	while (wr) {
-		if (num_wrs == 0) {
-			err = ENOMEM;
-			*bad_wr = wr;
-			break;
-		}
-		swsqe = &qhp->wq.sq.sw_sq[qhp->wq.sq.pidx];
-		swsqe->opcode = FW_RI_SEND;
-		swsqe->idx = qhp->wq.sq.pidx;
-		swsqe->complete = 0;
-		swsqe->signaled = (wr->send_flags & IBV_SEND_SIGNALED);
-		swsqe->wr_id = wr->wr_id;
-		err = sim_send(qhp, wr);
-		if (err) {
-			*bad_wr = wr;
-			break;
-		}
-		wr = wr->next;
-		num_wrs--;
-		t4_sq_produce(&qhp->wq, 1);
-	}
-	pthread_spin_unlock(&qhp->lock);
-	return err;
-#else
-	return ENOSYS;
-#endif
-}
-
-int c4iw_post_send(struct ibv_qp *ibqp, struct ibv_send_wr *wr,
-	           struct ibv_send_wr **bad_wr)
-{
-	switch (ibqp->qp_type) {
-	case IBV_QPT_RC:
-		return post_send_rc(ibqp, wr, bad_wr);
-	case IBV_QPT_RAW_ETY:
-		return post_send_raw(ibqp, wr, bad_wr);
-	default:
-		return ENOSYS;
-	}
-}
-
-static int post_receive_rc(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
+int c4iw_post_receive(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
 			   struct ibv_recv_wr **bad_wr)
 {
 	int err = 0;
@@ -516,89 +459,14 @@ static int post_receive_rc(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
 		num_wrs--;
 	}
 	if (t4_wq_db_enabled(&qhp->wq))
-		t4_ring_rq_db(&qhp->wq, idx);
+		t4_ring_rq_db(&qhp->wq, idx, dev_is_t5(qhp->rhp),
+			      len16, wqe);
 	else
 		ring_kernel_db(qhp, qhp->wq.rq.qid, idx);
 	qhp->wq.rq.queue[qhp->wq.rq.size].status.host_wq_pidx = \
 			(qhp->wq.rq.wq_pidx);
 	pthread_spin_unlock(&qhp->lock);
 	return err;
-}
-
-static int post_receive_raw(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
-			    struct ibv_recv_wr **bad_wr)
-{
-#ifdef SIM
-	int err = 0;
-	struct c4iw_qp *qhp;
-	union t4_recv_wr *wqe;
-	u32 num_wrs;
-	u8 len16 = 0;
-	u16 idx = 0;
-
-	qhp = to_c4iw_qp(ibqp);
-	pthread_spin_lock(&qhp->lock);
-	if (t4_wq_in_error(&qhp->wq)) {
-		pthread_spin_unlock(&qhp->lock);
-		return -EINVAL;
-	}
-	num_wrs = t4_rq_avail(&qhp->wq);
-	if (num_wrs == 0) {
-		pthread_spin_unlock(&qhp->lock);
-		return -ENOMEM;
-	}
-	while (wr) {
-		if (wr->num_sge > T4_MAX_RECV_SGE) {
-			err = -EINVAL;
-			*bad_wr = wr;
-			break;
-		}
-		wqe = &qhp->wq.rq.queue[qhp->wq.rq.pidx];
-		if (num_wrs)
-			err = build_rdma_recv(qhp, wqe, wr, &len16);
-		else
-			err = -ENOMEM;
-		if (err) {
-			*bad_wr = wr;
-			break;
-		}
-
-		qhp->wq.rq.sw_rq[qhp->wq.rq.pidx].wr_id = wr->wr_id;
-
-		wqe->recv.opcode = FW_RI_RECV_WR;
-		wqe->recv.r1 = 0;
-		wqe->recv.wrid = qhp->wq.rq.pidx;
-		wqe->recv.r2[0] = 0;
-		wqe->recv.r2[1] = 0;
-		wqe->recv.r2[2] = 0;
-		wqe->recv.len16 = len16;
-		if (len16 < 5)
-			wqe->flits[8] = 0;
-		t4_rq_produce(&qhp->wq, 2);
-		wr = wr->next;
-		num_wrs--;
-		idx += 2;
-	}
-	if (t4_wq_db_enabled(&qhp->wq))
-		t4_ring_rq_db(&qhp->wq, idx);
-	pthread_spin_unlock(&qhp->lock);
-	return err;
-#else
-	return ENOSYS;
-#endif
-}
-
-int c4iw_post_receive(struct ibv_qp *ibqp, struct ibv_recv_wr *wr,
-		      struct ibv_recv_wr **bad_wr)
-{
-	switch (ibqp->qp_type) {
-	case IBV_QPT_RC:
-		return post_receive_rc(ibqp, wr, bad_wr);
-	case IBV_QPT_RAW_ETY:
-		return post_receive_raw(ibqp, wr, bad_wr);
-	default:
-		return ENOSYS;
-	}
 }
 
 static void update_qp_state(struct c4iw_qp *qhp)
@@ -649,8 +517,7 @@ void c4iw_flush_qp(struct c4iw_qp *qhp)
 	pthread_spin_lock(&qhp->lock);
 	if (schp != rchp)
 		c4iw_flush_hw_cq(schp);
-	c4iw_count_scqes(&schp->cq, &qhp->wq, &count);
-	c4iw_flush_sq(qhp, count);
+	c4iw_flush_sq(qhp);
 	pthread_spin_unlock(&qhp->lock);
 	pthread_spin_unlock(&schp->lock);
 	pthread_spin_lock(&qhp->lock);
@@ -661,7 +528,7 @@ void c4iw_flush_qps(struct c4iw_dev *dev)
 	int i;
 
 	pthread_spin_lock(&dev->lock);
-	for (i=0; i < T4_MAX_NUM_QP; i++) {
+	for (i=0; i < dev->max_qp; i++) {
 		struct c4iw_qp *qhp = dev->qpid2ptr[i];
 		if (qhp) {
 			if (!qhp->wq.flushed && t4_wq_in_error(&qhp->wq)) {
