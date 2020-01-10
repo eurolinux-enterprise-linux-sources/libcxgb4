@@ -1,0 +1,499 @@
+commit 119aabce5e6722336e9f5a97cea14eebab2376ca
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Nov 9 09:50:22 2011 -0600
+
+    Spin release 1.2.0.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 721cfb11ca5697d017bc60167805aea9bbb13ba0
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Mon Nov 7 15:08:45 2011 +0530
+
+    libcxgb4: Reset flush_cidx before incrementing cidx.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit db4fe38c7ee2b3ad9dc8c33f2b54f0c8cdf8b4d2
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Mon Nov 7 15:06:29 2011 +0530
+
+    libcxgb4: Fix multi-flush logic path....again
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 19198bdc2f7feb05babcc2a544ae8b48e4943c41
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Mon Nov 7 15:02:57 2011 +0530
+
+    libcxgb4: Reset cidx_flush if a active queue starts getting hw cqes
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 98545f3a8cbe1670efad080cf908db42269f76ff
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Mon Nov 7 14:56:44 2011 +0530
+
+    libcxgb4: Support for flushing a CQ bound to multiple QPs
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 86ba968706b3dc8cb232a303201bb03a2d919c88
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Mon Nov 7 13:06:43 2011 +0530
+
+    libcxgb4: Checks iw_cxgb4 ABI version to know door bell drop recovery support
+    
+    Store iw_cxgb4 ABI version in a global state. Read that global state in
+    t4_wq_db_enabled to know if iw_cxgb4 driver supports door bell drop recovery.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 2b6563ed5b377dac56c218b809d387089d70312d
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Sun Oct 23 16:50:16 2011 +0530
+
+    libcxgb4: fixed compilation warnings
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit c5c120969c22a04d34adc566085192afc99d0db9
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 19:05:20 2011 +0530
+
+    libcxgb4: Bug Fix#4410 - Fix 3 segfaults
+    
+    This patch fixes 3 segfaults with below signatures:
+    ----
+    1)
+    Program received signal SIGSEGV, Segmentation fault.
+    [Switching to Thread 0x7ffff7fef710 (LWP 22624)]
+    0x00007ffff75613e4 in create_read_req_cqe (wq=0x7fffe800ada0,
+    hw_cqe=0x7ffff7fc7880, read_cqe=0x7ffff7fee860) at src/cq.c:162
+    162             read_cqe->u.rdma.u.scqe.cidx = wq->sq.oldest_read->idx;
+    (gdb) bt
+    hw_cqe=0x7ffff7fc7880, read_cqe=0x7ffff7fee860) at src/cq.c:162
+    attr=0x7ffff7feeae0, attr_mask=1) at src/verbs.c:691
+    src/verbs.c:721
+    
+    2)
+    Program received signal SIGSEGV, Segmentation fault.
+    [Switching to Thread 0x7ffff6e07710 (LWP 22218)]
+    0x00007ffff71563e4 in create_read_req_cqe (wq=0x7fffe800ada0,
+    hw_cqe=0x7ffff7fc7880, read_cqe=0x7ffff6e02b70) at src/cq.c:162
+    162             read_cqe->u.rdma.u.scqe.cidx = wq->sq.oldest_read->idx;
+    (gdb) bt
+    hw_cqe=0x7ffff7fc7880, read_cqe=0x7ffff6e02b70) at src/cq.c:162
+    src/verbs.c:887
+    
+    3)
+    (gdb) bt
+    wc=0x7ffff51378d0) at src/cq.c:776
+    evd_ptr=<value optimized out>, wc_ptr=<value optimized out>)
+        at /usr/include/infiniband/verbs.h:957
+    ----
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 075adec1159606303b40f4b29ef3cea7ab780ac2
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 18:59:16 2011 +0530
+
+    libcxgb4: return -ENOSYS in c4iw_resize_cq().
+    
+    I fixed a "bug" in c4iw_resize_cq() in an earlier commit which regressed
+    us.  c4iw_resize_cq() was returning 0 always even though we don't support
+    resizing the CQ.  So I change libcxgb4 to return whatever errno is
+    returned by the kernel driver.   However, because the driver didn't set
+    the uverbs capabilities for resize_cq, uverbs returned EINVAL.  The OMPI
+    code checks for -ENOSYS and handles providers that don't support it.
+    If, however, ibv_resize_cq() returns any other error, OMPI bails out.
+    So we need to return -ENOSYS.
+    
+    I didn't see this error, however, running NP192 OMPI/IMB all night long.
+    So it must only try to resize for small jobs and thus I missed the
+    regression.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 320285a3a3a93a614e24a78f7a68780d7791e3c5
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 18:53:47 2011 +0530
+
+    libcxgb4: Don't flush unsignaled WRs if the QP closed normally
+    
+    - add query_qp support in driver to query the qp state before flushing.
+    
+    - fixed flush logic (again).
+    
+    - don't flush unsignaled WRs is QP had a normal close.
+    
+    - support up to 64K QIDs.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 4c98bebe97aeef1c5cda2f071eb9c1d4fa29c37e
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 17:58:38 2011 +0530
+
+    libcxgb4: Correctly flush unsignaled WRs followed by a signaled WR.
+    
+    The cq flush logic was not accounting for unsignaled SQ WRs followed by
+    a signaled WR.  The result was too many flushed CQEs causing application
+    faults or assert() failures in libcxgb4 because the SQ state is corrupted.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 8196f85bdefb1511d6d834240a92fdaf815834b8
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 17:31:03 2011 +0530
+
+    libcxgb4: Remove auto generated ltmain.sh file.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 230d12f42d143eeb53d8c4935ba27620c13e6165
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 17:20:37 2011 +0530
+
+    libcxgb4: Add debug code to dump state on a stall condition.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 2df0677b22aebb7a22d0e8ca11beb90250b363c7
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Fri Oct 21 15:04:46 2011 +0530
+
+    libcxgb4: don't write host idx values when wq is in error.
+    
+    This fixes a regression introduced by the db recovery changes.  The host
+    idx shadow fields at the end of the wq should only be written if the wq
+    is not in error.  Otherwise, a seg fault can occur.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 4eaf4b9added6ca660ef2f9363b24d754185fddf
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Thu Oct 20 19:55:57 2011 +0530
+
+    libcxgb4: cq debug changes
+    
+        - turn on cq overflow detection by default
+    
+        - shadow cq->cidx in the cq status page
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit b15d02248dd1029706d07fa229767d8b68d16c65
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Thu Oct 20 19:43:07 2011 +0530
+
+    libcxgb4: DB Drop Recovery for RDMA and LLD queues.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit b2c7499eab73cf28cbd9cf86f6ea134e2450cdd3
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Sun Oct 23 12:59:24 2011 +0530
+
+    libcxgb4: put queue idx values in status page for debug.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit 60a30673a4072b6727e7266f7782607ddcbc8de7
+Author: Vipul Pandya <vipul@chelsio.com>
+Date:   Thu Oct 20 18:07:13 2011 +0530
+
+    libcxgb4: DB Overflow Avoidance.
+    
+    - when user dbs are disabled, call into the kernel driver via modify_qp()
+    to ring the dbs.
+    
+    Signed-off-by: Vipul Pandya <vipul@chelsio.com>
+
+commit c8651d01a2d69d83caff8c01b32be0b23624d8da
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Mar 10 09:45:00 2011 -0600
+
+    Spin release 1.1.1.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit ace467085deb7327522faeb19e20e13d691f66a2
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Mar 10 09:34:11 2011 -0600
+
+    Flush MA FIFO for on-chip queues.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 7cb87f46c1784c791d29646104ab355ed920747d
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Mar 10 09:27:57 2011 -0600
+
+    increase the frequency of CIDX-INC updates.
+    
+    Heavy IMB loads reveal that my current algorithm of doing CIDX-INC
+    GTS writes every 1/2 the CQ depth was not sufficient.  This patch
+    increases the frequency to 1/16.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 7652d71daadda0c3aba9b96311ea623a1e324d77
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 16:57:04 2010 -0500
+
+    Spin release 1.1.0.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit ed05d22592bc96987635b2c255a99663f286b812
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 16:56:51 2010 -0500
+
+    Support all T4 device IDs.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit b051a2ea9dc7b6ffa08f955e60b331e42fec8672
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 15:54:35 2010 -0500
+
+    Support ABI 0 and 1 versions of the iwarp driver.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 62f1363bb716e2283f9e2b885e5f02a6d5c692d1
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 14:06:17 2010 -0500
+
+    Bump the slots per SQ to 5 to allow up to 128MB fast registers.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit d51e041839254d656cc260dba3f26a7c9d73aa56
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 14:06:16 2010 -0500
+
+    Raw QP implementation
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 8f55539d0b8aea70084edf31687e590cf5a57221
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 14:03:55 2010 -0500
+
+    Add compile-time user mode rdma stats.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 2e3531bbd91d7a6f057b3503132aef5e64adb548
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 13:57:03 2010 -0500
+
+    Support on-chip SQs.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 65bb173b86c2e0a9ff5f877e4d3951cb8daa6e97
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 13:54:44 2010 -0500
+
+    Work around TERM CQE hw bug.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 6bb37d1f72652d4ed0c1972bc673f4418cc7a856
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Sep 15 13:54:44 2010 -0500
+
+    Zero out padding in iSGLs.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit aad128404c494ec4779055b5e550c2d7de7d5ca9
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Jul 22 14:58:51 2010 -0500
+
+    Spin release 1.0.4
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 07ac253a8a479fd59fe654baf5a94ffc1de13765
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Jul 22 14:57:27 2010 -0500
+
+    Do GTS/CIDX_INC writes in the poll path to avoid drops.
+    
+    With T4 asic, we still see the CIDX_INC overflow/drops.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 3394198639f811c86ab519c43197a9b724435cb0
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu Jul 22 14:56:53 2010 -0500
+
+    Support T420 and T440 cards.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 311dd1c8ec3e38287895053dce52dfef5ed5f0b1
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Fri Jun 11 10:40:53 2010 -0500
+
+    Spin release 1.0.3.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit a62d7cf38f7b6c731486ff969ee7e3a4238ebc3f
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Fri Jun 11 10:37:17 2010 -0500
+
+    Support variable sized work requests.
+    
+    T4 EQ entries are in multiples of 64B.  Currently the RDMA SQ and RQ
+    use fixed sized entries composed of 4 EQ entries for the SQ and 2 EQ
+    entries for the RQ.  For optimial latency with small IO, we need to
+    change this so the HW only needs to DMA the EQ entries actually used by
+    a given work request.
+    
+    Implementation:
+    
+    - add wq_pidx counter to track where we are in the EQ.  cidx/pidx are
+    used for the sw sq/rq tracking and flow control.
+    
+    - the variable part of work requests is the SGL.  Add new functions to
+    build the SGL and/or immediate data directly in the EQ memory wrapping
+    when needed.
+    
+    - adjust the min burst size for the EQ contexts to 64B.
+
+commit 3be829d117a8ca7957370b09b477fe551de0cea5
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 20 15:52:59 2010 -0500
+
+    Spin release 1.0.2.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit dc1ea232e8ece4ba53d2496befad14bd433e2e3e
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 20 15:48:37 2010 -0500
+
+    only insert sq qid in lookup tables.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 00c60fd47b71dac42d864662567701e2618ff45d
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 20 15:47:37 2010 -0500
+
+    Update some driver limits.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit f25661e19d728a0a33a221c0646a9fce9b160f8b
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 20 15:46:38 2010 -0500
+
+    Fix cq arm overflow.
+    
+    - wrap cq->cqidx_inc based on cq size
+    - optimize t4_arm_cq() logic
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 8c224aca8f1acd219010e46da538ae4c9a4f9d1a
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 20 15:45:54 2010 -0500
+
+    Optimize cq overflow detection.
+    
+    1) save the timestamp flit in the cq when we consume a CQE
+    
+    2) always compare the saved flit with the previous entry flit when reading
+    the next CQE entry.  If the flits don't compare, then we've overflowed.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 0c0cfbdbeb32548994d94a6278c74e2a4f11d9ba
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:57:56 2010 -0500
+
+    Spin release 1.0.1.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 5b9ebdfbcd6df0f02375717aff20400ac33dc47f
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:34:07 2010 -0500
+
+    Update code with new t4fw interface.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 0116d75d8dcc2f4018d0c0074728ca7d127a5065
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:32:10 2010 -0500
+
+    Refresh t4fw-interface.h
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit ad7a3f8dea2873a3a600859cfe8eb10ad979ddb1
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:30:42 2010 -0500
+
+    Avoid CQ arm overflows.
+    
+    There are 2 limits that need to be taken into account when arming the CQ.
+    1) the GTS register limits the delta idx to <= M_CIDXINC.
+    2) T4 HW limits it to < cq size.
+    
+    Update t4_arm_cq() to account for these limits.
+
+commit 2905808680aad82b4f295850551bbe15711c2f42
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:30:12 2010 -0500
+
+    Poll fixes.
+    
+    - when synthesizing CQEs for the SWCQ, always use SQ QID.
+    - when flushing, ignore target side read response errors.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 7a7962e856eb606e25a1529bc7f2945e639042b7
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:24:07 2010 -0500
+
+    Fix CQ overflow detection.
+    
+    CQ overflow detection needs to read the gen bit and the timestamp in
+    one read operation.  Otherwise false overflows can result.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 5ca340c298c61c9019d8593ee7acdbda93fdd498
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Thu May 6 17:23:53 2010 -0500
+
+    libcxgb3: create_read_req_cqe() needs to swap read length.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit 9bd1e60d3aea10dbe7cb9920363e485b845d85a3
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Wed Apr 14 10:36:41 2010 -0500
+
+    Refresh t4fw_interface.h
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>
+
+commit d6e6ae69be5edffc566178e1b7e6402d61a5a786
+Author: Steve Wise <swise@opengridcomputing.com>
+Date:   Fri Apr 2 16:01:31 2010 -0500
+
+    Add libcxgb4 files.
+    
+    Signed-off-by: Steve Wise <swise@opengridcomputing.com>

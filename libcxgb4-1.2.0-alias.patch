@@ -1,0 +1,21 @@
+--- libcxgb4-1.2.0/Makefile.am.old	2011-11-09 10:57:03.000000000 -0500
++++ libcxgb4-1.2.0/Makefile.am	2013-02-07 15:02:26.000000000 -0500
+@@ -1,6 +1,6 @@
+ lib_LTLIBRARIES = src/libcxgb4.la
+ 
+-AM_CFLAGS = -g -Wall -D_GNU_SOURCE -DNDEBUG -DOVERFLOW_DETECTION
++AM_CFLAGS = -g -Wall -D_GNU_SOURCE -DNDEBUG -DOVERFLOW_DETECTION -fno-strict-aliasing
+ 
+ if HAVE_LD_VERSION_SCRIPT
+     cxgb4_version_script = -Wl,--version-script=$(srcdir)/src/cxgb4.map
+--- libcxgb4-1.2.0/Makefile.in.old	2013-02-07 15:09:28.000000000 -0500
++++ libcxgb4-1.2.0/Makefile.in	2013-02-07 15:09:58.000000000 -0500
+@@ -195,7 +195,7 @@ sharedstatedir = @sharedstatedir@
+ sysconfdir = @sysconfdir@
+ target_alias = @target_alias@
+ lib_LTLIBRARIES = src/libcxgb4.la
+-AM_CFLAGS = -g -Wall -D_GNU_SOURCE -DNDEBUG -DOVERFLOW_DETECTION
++AM_CFLAGS = -g -Wall -D_GNU_SOURCE -DNDEBUG -DOVERFLOW_DETECTION -fno-strict-aliasing
+ @HAVE_LD_VERSION_SCRIPT_FALSE@cxgb4_version_script = 
+ @HAVE_LD_VERSION_SCRIPT_TRUE@cxgb4_version_script = -Wl,--version-script=$(srcdir)/src/cxgb4.map
+ src_libcxgb4_la_SOURCES = src/cq.c src/dev.c src/qp.c src/verbs.c src/sim.c
