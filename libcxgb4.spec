@@ -1,17 +1,15 @@
 Name: libcxgb4
-Version: 1.2.0
-Release: 6%{?dist}
+Version: 1.3.5
+Release: 2%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
 License: GPLv2 or BSD
 Url: http://www.openfabrics.org/
 Source: http://www.openfabrics.org/downloads/cxgb4/%{name}-%{version}.tar.gz
-Source1: libcxgb4-modprobe.conf
-Patch0:  libcxgb4-1.1.0-type.patch
-Patch1:	 libcxgb4-1.2.0-alias.patch
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: libibverbs-devel >= 1.1.3, libtool
 Obsoletes: %{name}-devel
+Requires: rdma
 ExcludeArch: s390 s390x
 Provides: libibverbs-driver.%{_arch}
 %description
@@ -27,17 +25,14 @@ Static version of libcxgb4 that may be linked directly to an application.
 
 %prep
 %setup -q
-%patch0 -p1
-%patch1 -p1
 
 %build
 %configure
-%{__make} %{?_smp_mflags}
+%{__make} %{?_smp_mflags} CFLAGS="$CFLAGS -fno-strict-aliasing"
 
 %install
 rm -rf $RPM_BUILD_ROOT
 %{__make} install DESTDIR=$RPM_BUILD_ROOT
-install -p -m 644 -D %{SOURCE1} ${RPM_BUILD_ROOT}%{_sysconfdir}/modprobe.d/libcxgb4.conf
 # remove unpackaged files from the buildroot
 rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
 
@@ -48,7 +43,6 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root,-)
 %{_libdir}/*.so*
 %{_sysconfdir}/libibverbs.d/*.driver
-%{_sysconfdir}/modprobe.d/libcxgb4.conf
 %doc AUTHORS COPYING README
 
 %files static
@@ -56,6 +50,15 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
+* Tue Dec 23 2014 Doug Ledford <dledford@redhat.com> - 1.3.5-2
+- Rebuild without modprobe file
+- Add requires on rdma package that now contains modprobe file
+- Related: bz1164618
+
+* Fri Oct 17 2014 Doug Ledford <dledford@redhat.com> - 1.3.5-1
+- Update to latest upstream release and rebuild against latest libibverbs
+- Related: bz1137044
+
 * Mon Mar 03 2014 Doug Ledford <dledford@redhat.com> - 1.2.0-6
 - Our -fno-strict-alias option patch was lost, and we discovered it
   was lost when I rebuilt the package.  Put it back and rebuild

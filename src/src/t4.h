@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010 Chelsio, Inc. All rights reserved.
+ * Copyright (c) 2006-2014 Chelsio, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -51,7 +51,6 @@
 #define __be64 uint64_t
 #define u64 uint64_t
 #define DECLARE_PCI_UNMAP_ADDR(a)
-#define dma_addr_t uint64_t
 #define __iomem
 #define cpu_to_be16 htons
 #define cpu_to_be32 htonl
@@ -75,13 +74,20 @@
 
 #include <arpa/inet.h> 			/* For htonl() and friends */
 #include "t4_regs.h"
+#include "t4_chip_type.h"
 #include "t4fw_interface.h"
+
+#ifdef DEBUG
+#define DBGLOG(s)
+#define PDBG(fmt, args...) do {syslog(LOG_DEBUG, fmt, ##args); } while (0)
+#else
+#define DBGLOG(s)
+#define PDBG(fmt, args...) do {} while (0)
+#endif
 
 #define T4_MAX_READ_DEPTH 16
 #define T4_QID_BASE 1024
 #define T4_MAX_QIDS 256
-#define T4_MAX_NUM_QP 65536
-#define T4_MAX_NUM_CQ 65536
 #define T4_MAX_NUM_PD 65536
 #define T4_EQ_STATUS_ENTRIES (L1_CACHE_BYTES > 64 ? 2 : 1)
 #define T4_MAX_EQ_SIZE (65520 - T4_EQ_STATUS_ENTRIES)
@@ -304,6 +310,7 @@ struct t4_swsqe {
 	int			complete;
 	int			signaled;
 	u16			idx;
+	int			flushed;
 };
 
 enum {
@@ -354,6 +361,7 @@ struct t4_wq {
 	u32 qid_mask;
 	int error;
 	int flushed;
+	u8 *db_offp;
 };
 
 static inline void t4_ma_sync(struct t4_wq *wq, int page_size)
@@ -450,20 +458,74 @@ static inline void t4_sq_consume(struct t4_wq *wq)
 		wq->sq.queue[wq->sq.size].status.host_cidx = wq->sq.cidx;
 }
 
-static inline void t4_ring_sq_db(struct t4_wq *wq, u16 inc)
+static void copy_wqe_to_udb(volatile u32 *udb_offset, void *wqe)
 {
-	if (t4_sq_onchip(wq)) {
-		int i;
-		for (i = 0; i < 16; i++)
-			*(u32 *)&wq->sq.queue[wq->sq.size].flits[2] = i;
+	u64 *src, *dst;
+	int len16 = 4;
+
+	src = (u64 *)wqe;
+	dst = (u64 *)udb_offset;
+
+	while (len16) {
+		*dst++ = *src++;
+		*dst++ = *src++;
+		len16--;
 	}
-	wmb();
+}
+
+extern int ma_wr;
+extern int t5_en_wc;
+
+static inline void t4_ring_sq_db(struct t4_wq *wq, u16 inc, u8 t5, u8 len16,
+				 union t4_wr *wqe)
+{
+	wc_wmb();
+	if (t5) {
+		if (t5_en_wc && inc == 1) {
+			PDBG("%s: WC wq->sq.pidx = %d; len16=%d\n",
+			     __func__, wq->sq.pidx, len16);
+			copy_wqe_to_udb(wq->sq.udb + 14, wqe);
+		} else {
+			PDBG("%s: DB wq->sq.pidx = %d; len16=%d\n",
+			     __func__, wq->sq.pidx, len16);
+			writel(V_PIDX_T5(inc), wq->sq.udb);
+		}
+		wc_wmb();
+		return;
+	}
+	if (ma_wr) {
+		if (t4_sq_onchip(wq)) {
+			int i;
+			for (i = 0; i < 16; i++)
+				*(volatile u32 *)&wq->sq.queue[wq->sq.size].flits[2+i] = i;
+		}
+	} else {
+		if (t4_sq_onchip(wq)) {
+			int i;
+			for (i = 0; i < 16; i++)
+				*(u32 *)&wq->sq.queue[wq->sq.size].flits[2] = i;
+		}
+	}
 	writel(V_QID(wq->sq.qid & wq->qid_mask) | V_PIDX(inc), wq->sq.udb);
 }
 
-static inline void t4_ring_rq_db(struct t4_wq *wq, u16 inc)
+static inline void t4_ring_rq_db(struct t4_wq *wq, u16 inc, u8 t5, u8 len16,
+				 union t4_recv_wr *wqe)
 {
-	wmb();
+	wc_wmb();
+	if (t5) {
+		if (t5_en_wc && inc == 1) {
+			PDBG("%s: WC wq->rq.pidx = %d; len16=%d\n",
+			     __func__, wq->rq.pidx, len16);
+			copy_wqe_to_udb(wq->rq.udb + 14, wqe);
+		} else {
+			PDBG("%s: DB wq->rq.pidx = %d; len16=%d\n",
+			     __func__, wq->rq.pidx, len16);
+			writel(V_PIDX_T5(inc), wq->rq.udb);
+		}
+		wc_wmb();
+		return;
+	}
 	writel(V_QID(wq->rq.qid & wq->qid_mask) | V_PIDX(inc), wq->rq.udb);
 }
 
@@ -477,16 +539,6 @@ static inline void t4_set_wq_in_error(struct t4_wq *wq)
 	wq->rq.queue[wq->rq.size].status.qp_err = 1;
 }
 
-static inline void t4_disable_wq_db(struct t4_wq *wq)
-{
-	wq->rq.queue[wq->rq.size].status.db_off = 1;
-}
-
-static inline void t4_enable_wq_db(struct t4_wq *wq)
-{
-	wq->rq.queue[wq->rq.size].status.db_off = 0;
-}
-
 extern int c4iw_abi_version;
 
 static inline int t4_wq_db_enabled(struct t4_wq *wq)
@@ -498,7 +550,7 @@ static inline int t4_wq_db_enabled(struct t4_wq *wq)
 	 * DB from user mode library.
 	 */
 	if ( c4iw_abi_version >= 2 )
-		return !wq->rq.queue[wq->rq.size].status.db_off;
+		return ! *wq->db_offp;
 	else
 		return 1;
 }
@@ -562,7 +614,7 @@ static inline void t4_swcq_consume(struct t4_cq *cq)
 static inline void t4_hwcq_consume(struct t4_cq *cq)
 {
 	cq->bits_type_ts = cq->queue[cq->cidx].bits_type_ts;
-	if (++cq->cidx_inc == (cq->size >> 4)) {
+	if (++cq->cidx_inc == (cq->size >> 4) || cq->cidx_inc == M_CIDXINC) {
 		uint32_t val;
 
 		val = V_SEINTARM(0) | V_CIDXINC(cq->cidx_inc) | V_TIMERREG(7) |
@@ -598,6 +650,7 @@ static inline int t4_next_hw_cqe(struct t4_cq *cq, struct t4_cqe **cqe)
 		cq->error = 1;
 		assert(0);
 	} else if (t4_valid_cqe(cq, &cq->queue[cq->cidx])) {
+		rmb();
 		*cqe = &cq->queue[cq->cidx];
 		ret = 0;
 	} else
@@ -649,4 +702,10 @@ static inline void t4_reset_cq_in_error(struct t4_cq *cq)
 {
 	((struct t4_status_page *)&cq->queue[cq->size])->qp_err = 0;
 }
+
+struct t4_dev_status_page 
+{
+	u8 db_off;
+};
+
 #endif

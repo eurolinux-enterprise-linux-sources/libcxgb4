@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010 Chelsio, Inc. All rights reserved.
+ * Copyright (c) 2006-2014 Chelsio, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -46,48 +46,38 @@
 #include "cxgb4-abi.h"
 
 #define PCI_VENDOR_ID_CHELSIO		0x1425
-#define PCI_DEVICE_ID_CHELSIO_PE10K	0xa000
-#define PCI_DEVICE_ID_CHELSIO_T440DBG	0x4400
-#define PCI_DEVICE_ID_CHELSIO_T420CR	0x4401
-#define PCI_DEVICE_ID_CHELSIO_T422CR	0x4402
-#define PCI_DEVICE_ID_CHELSIO_T440CR	0x4403
-#define PCI_DEVICE_ID_CHELSIO_T420BCH	0x4404
-#define PCI_DEVICE_ID_CHELSIO_T440BCH	0x4405
-#define PCI_DEVICE_ID_CHELSIO_T440CH	0x4406
-#define PCI_DEVICE_ID_CHELSIO_T420SO	0x4407
-#define PCI_DEVICE_ID_CHELSIO_T420CX	0x4408
-#define PCI_DEVICE_ID_CHELSIO_T420BT	0x4409
-#define PCI_DEVICE_ID_CHELSIO_T404BT	0x440a
-#define PCI_DEVICE_ID_CHELSIO_B420	0x440b
-#define PCI_DEVICE_ID_CHELSIO_B404	0x440c
 
-#define HCA(v, d, t) \
-	{ .vendor = PCI_VENDOR_ID_##v,			\
-	  .device = PCI_DEVICE_ID_CHELSIO_##d,		\
-	  .type = CHELSIO_##t }
+/*
+ * Macros needed to support the PCI Device ID Table ...
+ */
+#define CH_PCI_DEVICE_ID_TABLE_DEFINE_BEGIN \
+	struct { \
+		unsigned vendor; \
+		unsigned device; \
+		unsigned chip_version; \
+	} hca_table[] = {
 
-struct {
-	unsigned vendor;
-	unsigned device;
-	enum c4iw_hca_type type;
-} hca_table[] = {
-	HCA(CHELSIO, PE10K, T4),
-	HCA(CHELSIO, T440DBG, T4),
-	HCA(CHELSIO, T420CR, T4),
-	HCA(CHELSIO, T422CR, T4),
-	HCA(CHELSIO, T440CR, T4),
-	HCA(CHELSIO, T420BCH, T4),
-	HCA(CHELSIO, T440BCH, T4),
-	HCA(CHELSIO, T440CH, T4),
-	HCA(CHELSIO, T420SO, T4),
-	HCA(CHELSIO, T420CX, T4),
-	HCA(CHELSIO, T420BT, T4),
-	HCA(CHELSIO, T404BT, T4),
-	HCA(CHELSIO, B420, T4),
-	HCA(CHELSIO, B404, T4),
-};
+#define CH_PCI_DEVICE_ID_FUNCTION \
+		0x4
 
-int c4iw_page_size;
+#define CH_PCI_ID_TABLE_ENTRY(__DeviceID) \
+		{ \
+			.vendor = PCI_VENDOR_ID_CHELSIO, \
+			.device = (__DeviceID), \
+			.chip_version = CHELSIO_PCI_ID_CHIP_VERSION(__DeviceID), \
+		}
+
+#define CH_PCI_DEVICE_ID_TABLE_DEFINE_END \
+	}
+
+#include "t4_chip_type.h"
+#include "t4_pci_id_tbl.h"
+
+unsigned long c4iw_page_size;
+unsigned long c4iw_page_shift;
+unsigned long c4iw_page_mask;
+int ma_wr;
+int t5_en_wc = 1;
 
 SLIST_HEAD(devices_struct, c4iw_dev) devices;
 
@@ -123,6 +113,9 @@ static struct ibv_context *c4iw_alloc_context(struct ibv_device *ibdev,
 	struct ibv_get_context cmd;
 	struct c4iw_alloc_ucontext_resp resp;
 	struct c4iw_dev *rhp = to_c4iw_dev(ibdev);
+	struct ibv_query_device qcmd;
+	uint64_t raw_fw_ver;
+	struct ibv_device_attr attr;
 
 	context = malloc(sizeof *context);
 	if (!context)
@@ -131,14 +124,31 @@ static struct ibv_context *c4iw_alloc_context(struct ibv_device *ibdev,
 	memset(context, 0, sizeof *context);
 	context->ibv_ctx.cmd_fd = cmd_fd;
 
+	resp.status_page_size = 0;
+	resp.reserved = 0;
 	if (ibv_cmd_get_context(&context->ibv_ctx, &cmd, sizeof cmd,
 				&resp.ibv_resp, sizeof resp))
 		goto err_free;
 
+	if (resp.reserved)
+		PDBG("%s c4iw_alloc_ucontext_resp reserved field modified by kernel\n",
+		     __FUNCTION__);
+
+	context->status_page_size = resp.status_page_size;
+	if (resp.status_page_size) {
+		context->status_page = mmap(NULL, resp.status_page_size,
+					    PROT_READ, MAP_SHARED, cmd_fd,
+					    resp.status_page_key);
+		if (context->status_page == MAP_FAILED)
+			goto err_free;
+	} 
+
 	context->ibv_ctx.device = ibdev;
 	context->ibv_ctx.ops = c4iw_ctx_ops;
 
-	switch (rhp->hca_type) {
+	switch (rhp->chip_version) {
+	case CHELSIO_T5:
+		PDBG("%s T5/T4 device\n", __FUNCTION__);
 	case CHELSIO_T4:
 		PDBG("%s T4 device\n", __FUNCTION__);
 		context->ibv_ctx.ops.async_event = c4iw_async_event;
@@ -148,22 +158,56 @@ static struct ibv_context *c4iw_alloc_context(struct ibv_device *ibdev,
 		context->ibv_ctx.ops.req_notify_cq = c4iw_arm_cq;
 		break;
 	default:
-		PDBG("%s unknown hca type %d\n", __FUNCTION__, rhp->hca_type);
-		goto err_free;
+		PDBG("%s unknown hca type %d\n", __FUNCTION__,
+		     rhp->chip_version);
+		goto err_unmap;
 		break;
+	}
+
+	if (!rhp->mmid2ptr) {
+		int ret;
+
+		ret = ibv_cmd_query_device(&context->ibv_ctx, &attr, &raw_fw_ver, &qcmd,
+					   sizeof qcmd);
+		if (ret)
+			goto err_unmap;
+		rhp->max_mr = attr.max_mr;
+		rhp->mmid2ptr = calloc(attr.max_mr, sizeof(void *));
+		if (!rhp->mmid2ptr) {
+			goto err_unmap;
+		}
+		rhp->max_qp = T4_QID_BASE + attr.max_cq;
+		rhp->qpid2ptr = calloc(T4_QID_BASE + attr.max_cq, sizeof(void *));
+		if (!rhp->qpid2ptr) {
+			goto err_unmap;
+		}
+		rhp->max_cq = T4_QID_BASE + attr.max_cq;
+		rhp->cqid2ptr = calloc(T4_QID_BASE + attr.max_cq, sizeof(void *));
+		if (!rhp->cqid2ptr)
+			goto err_unmap;
 	}
 
 	return &context->ibv_ctx;
 
+err_unmap:
+	munmap(context->status_page, context->status_page_size);
 err_free:
+	if (rhp->cqid2ptr)
+		free(rhp->cqid2ptr);
+	if (rhp->qpid2ptr)
+		free(rhp->cqid2ptr);
+	if (rhp->mmid2ptr)
+		free(rhp->cqid2ptr);
 	free(context);
 	return NULL;
 }
 
 static void c4iw_free_context(struct ibv_context *ibctx)
 {
-	struct c4iw_context *context = to_c4iw_ctx(ibctx);
+	struct c4iw_context *context = to_c4iw_context(ibctx);
 
+	if (context->status_page_size)
+		munmap(context->status_page, context->status_page_size);
 	free(context);
 }
 
@@ -181,104 +225,127 @@ static void dump_cq(struct c4iw_cq *chp)
 	int i;
 
 	fprintf(stderr,
-		"CQ: id %u queue_va %p cidx 0x%08x depth %u error %u \
-		bits_type_ts %016lx\n"
-		chp->cq.cqid, chp->cq.queue, chp->cq.cidx,
-		chp->cq.size, chp->cq.error, be64_to_cpu(chp->cq.bits_type_ts));
+ 		"CQ: %p id %u queue %p cidx 0x%08x sw_queue %p sw_cidx %d sw_pidx %d sw_in_use %d depth %u error %u gen %d "
+		"cidx_inc %d bits_type_ts %016" PRIx64 " notempty %d\n", chp,
+                chp->cq.cqid, chp->cq.queue, chp->cq.cidx,
+	 	chp->cq.sw_queue, chp->cq.sw_cidx, chp->cq.sw_pidx, chp->cq.sw_in_use,
+                chp->cq.size, chp->cq.error, chp->cq.gen, chp->cq.cidx_inc, be64_to_cpu(chp->cq.bits_type_ts),
+		t4_cq_notempty(&chp->cq) || (chp->iq ? t4_iq_notempty(chp->iq) : 0));
+
 	for (i=0; i < chp->cq.size; i++) {
 		u64 *p = (u64 *)(chp->cq.queue + i);
 
-		fprintf(stderr, "%02x: %016lx", i, be64_to_cpu(*p++));
+		fprintf(stderr, "%02x: %016" PRIx64 " %016" PRIx64, i, be64_to_cpu(p[0]), be64_to_cpu(p[1]));
 		if (i == chp->cq.cidx)
 			fprintf(stderr, " <-- cidx\n");
 		else
 			fprintf(stderr, "\n");
-		fprintf(stderr, "%02x: %016lx\n", i, be64_to_cpu(*p++));
-		fprintf(stderr, "%02x: %016lx\n", i, be64_to_cpu(*p++));
-		fprintf(stderr, "%02x: %016lx\n", i, be64_to_cpu(*p++));
+		p+= 2;
+		fprintf(stderr, "%02x: %016" PRIx64 " %016" PRIx64 "\n", i, be64_to_cpu(p[0]), be64_to_cpu(p[1]));
+		p+= 2;
+		fprintf(stderr, "%02x: %016" PRIx64 " %016" PRIx64 "\n", i, be64_to_cpu(p[0]), be64_to_cpu(p[1]));
+		p+= 2;
+		fprintf(stderr, "%02x: %016" PRIx64 " %016" PRIx64 "\n", i, be64_to_cpu(p[0]), be64_to_cpu(p[1]));
+		p+= 2;
 	}
 }
 
-static void dump_qp(struct c4iw_qp *qhp, int qid)
+static void dump_qp(struct c4iw_qp *qhp)
 {
 	int i;
 	int j;
 	struct t4_swsqe *swsqe;
 	struct t4_swrqe *swrqe;
 	u16 cidx, pidx;
+	u64 *p;
 
 	fprintf(stderr,
-		"QP: id %u error %d qid_mask 0x%x\n"
-		"    SQ: id %u va %p cidx %u pidx %u wq_pidx %u depth %u\n"
-		"    RQ: id %u va %p cidx %u pidx %u depth %u\n",
+		"QP: %p id %u error %d flushed %d qid_mask 0x%x\n"
+		"    SQ: id %u queue %p sw_queue %p cidx %u pidx %u in_use %u wq_pidx %u depth %u flags 0x%x flush_cidx %d\n"
+		"    RQ: id %u queue %p sw_queue %p cidx %u pidx %u in_use %u depth %u\n",
+		qhp,
 		qhp->wq.sq.qid,
 		qhp->wq.error,
+		qhp->wq.flushed,
 		qhp->wq.qid_mask,
 		qhp->wq.sq.qid,
 		qhp->wq.sq.queue,
+		qhp->wq.sq.sw_sq,
 		qhp->wq.sq.cidx,
 		qhp->wq.sq.pidx,
+		qhp->wq.sq.in_use,
 		qhp->wq.sq.wq_pidx,
 		qhp->wq.sq.size,
+		qhp->wq.sq.flags,
+		qhp->wq.sq.flush_cidx,
 		qhp->wq.rq.qid,
 		qhp->wq.rq.queue,
+		qhp->wq.rq.sw_rq,
 		qhp->wq.rq.cidx,
 		qhp->wq.rq.pidx,
+		qhp->wq.rq.in_use,
 		qhp->wq.rq.size);
-	if (qid == qhp->wq.sq.qid) {
+	cidx = qhp->wq.sq.cidx;
+	pidx = qhp->wq.sq.pidx;
+	if (cidx != pidx)
 		fprintf(stderr, "SQ: \n");
-		cidx = qhp->wq.sq.cidx;
-		pidx = qhp->wq.sq.pidx;
-		while (cidx != pidx) {
-			swsqe = &qhp->wq.sq.sw_sq[cidx];
-			fprintf(stderr, "%04u: wr_id %016" PRIx64
-				" sq_wptr %08x read_len %u opcode 0x%x "
-				"complete %u signaled %u\n",
-				cidx,
-				swsqe->wr_id,
-				swsqe->idx,
-				swsqe->read_len,
-				swsqe->opcode,
-				swsqe->complete,
-				swsqe->signaled);
-			if (++cidx == qhp->wq.sq.size)
-				cidx = 0;
-		}
+	while (cidx != pidx) {
+		swsqe = &qhp->wq.sq.sw_sq[cidx];
+		fprintf(stderr, "%04u: wr_id %016" PRIx64
+			" sq_wptr %08x read_len %u opcode 0x%x "
+			"complete %u signaled %u cqe %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+			cidx,
+			swsqe->wr_id,
+			swsqe->idx,
+			swsqe->read_len,
+			swsqe->opcode,
+			swsqe->complete,
+			swsqe->signaled,
+			cpu_to_be64(swsqe->cqe.u.flits[0]),
+			cpu_to_be64(swsqe->cqe.u.flits[1]),
+			cpu_to_be64((u64)swsqe->cqe.reserved),
+			cpu_to_be64(swsqe->cqe.bits_type_ts));
+		if (++cidx == qhp->wq.sq.size)
+			cidx = 0;
+	}
 
-		fprintf(stderr, "SQ WQ: \n");
-		for (i=0; i < qhp->wq.sq.size; i++) {
-			for (j=0; j < 16; j++) {
-				fprintf(stderr, "%04u %016" PRIx64 " ",
-					i, ntohll(qhp->wq.sq.queue[i].flits[j]));
-				if (j == 0 && i == qhp->wq.sq.wq_pidx)
-					fprintf(stderr, " <-- pidx");
-				fprintf(stderr, "\n");
-			}
+	fprintf(stderr, "SQ WQ: \n");
+	p = (u64 *)qhp->wq.sq.queue;
+	for (i=0; i < qhp->wq.sq.size * T4_SQ_NUM_SLOTS; i++) {
+		for (j=0; j < T4_EQ_ENTRY_SIZE / 16; j++) {
+			fprintf(stderr, "%04u %016" PRIx64 " %016" PRIx64 " ",
+				i, ntohll(p[0]), ntohll(p[1]));
+			if (j == 0 && i == qhp->wq.sq.wq_pidx)
+				fprintf(stderr, " <-- pidx");
+			fprintf(stderr, "\n");
+			p += 2;
 		}
-	} else if (qid == qhp->wq.rq.qid) {
+	}
+	cidx = qhp->wq.rq.cidx;
+	pidx = qhp->wq.rq.pidx;
+	if (cidx != pidx)
 		fprintf(stderr, "RQ: \n");
-		cidx = qhp->wq.rq.cidx;
-		pidx = qhp->wq.rq.pidx;
-		while (cidx != pidx) {
-			swrqe = &qhp->wq.rq.sw_rq[cidx];
-			fprintf(stderr, "%04u: wr_id %016" PRIx64 "\n",
-				cidx,
-				swrqe->wr_id );
-			if (++cidx == qhp->wq.rq.size)
-				cidx = 0;
-		}
+	while (cidx != pidx) {
+		swrqe = &qhp->wq.rq.sw_rq[cidx];
+		fprintf(stderr, "%04u: wr_id %016" PRIx64 "\n",
+			cidx,
+			swrqe->wr_id );
+		if (++cidx == qhp->wq.rq.size)
+			cidx = 0;
+	}
 
-		fprintf(stderr, "RQ WQ: \n");
-		for (i=0; i < qhp->wq.rq.size; i++) {
-			for (j=0; j < 16; j++) {
-				fprintf(stderr, "%04u %016" PRIx64 " ",
-					i, ntohll(qhp->wq.rq.queue[i].flits[j]));
-				if (j == 0 && i == qhp->wq.rq.pidx)
-					fprintf(stderr, " <-- pidx");
-				if (j == 0 && i == qhp->wq.rq.cidx)
-					fprintf(stderr, " <-- cidx");
-				fprintf(stderr, "\n");
-			}
+	fprintf(stderr, "RQ WQ: \n");
+	p = (u64 *)qhp->wq.rq.queue;
+	for (i=0; i < qhp->wq.rq.size * T4_RQ_NUM_SLOTS; i++) {
+		for (j=0; j < T4_EQ_ENTRY_SIZE / 16; j++) {
+			fprintf(stderr, "%04u %016" PRIx64 " %016" PRIx64 " ",
+				i, ntohll(p[0]), ntohll(p[1]));
+			if (j == 0 && i == qhp->wq.rq.pidx)
+				fprintf(stderr, " <-- pidx");
+			if (j == 0 && i == qhp->wq.rq.cidx)
+				fprintf(stderr, " <-- cidx");
+			fprintf(stderr, "\n");
+			p+=2;
 		}
 	}
 }
@@ -290,24 +357,29 @@ void dump_state()
 
 	fprintf(stderr, "STALL DETECTED:\n");
 	SLIST_FOREACH(dev, &devices, list) {
+		//pthread_spin_lock(&dev->lock);
 		fprintf(stderr, "Device %s\n", dev->ibv_dev.name);
-		for (i = 0; i < T4_MAX_NUM_CQ; i++) {
+		for (i=0; i < dev->max_cq; i++) {
 			if (dev->cqid2ptr[i]) {
 				struct c4iw_cq *chp = dev->cqid2ptr[i];
+				//pthread_spin_lock(&chp->lock);
 				dump_cq(chp);
+				//pthread_spin_unlock(&chp->lock);
 			}
 		}
-		for (i = 0; i < T4_MAX_NUM_QP; i++) {
+		for (i=0; i < dev->max_qp; i++) {
 			if (dev->qpid2ptr[i]) {
 				struct c4iw_qp *qhp = dev->qpid2ptr[i];
-				dump_qp(qhp, i);
+				//pthread_spin_lock(&qhp->lock);
+				dump_qp(qhp);
+				//pthread_spin_unlock(&qhp->lock);
 			}
 		}
+		//pthread_spin_unlock(&dev->lock);
 	}
 	fprintf(stderr, "DUMP COMPLETE:\n");
 	fflush(stderr);
 }
-
 #endif /* end of STALL_DETECTION */
 
 /*
@@ -381,66 +453,56 @@ found:
 	}
 
 	PDBG("%s found vendor %d device %d type %d\n",
-	     __FUNCTION__, vendor, device, hca_table[i].type);
+	     __FUNCTION__, vendor, device, hca_table[i].chip_version);
 
-	dev = malloc(sizeof *dev);
+	dev = calloc(1, sizeof *dev);
 	if (!dev) {
 		return NULL;
 	}
 
 	pthread_spin_init(&dev->lock, PTHREAD_PROCESS_PRIVATE);
 	dev->ibv_dev.ops = c4iw_dev_ops;
-	dev->hca_type = hca_table[i].type;
+	dev->chip_version = hca_table[i].chip_version;
 	dev->abi_version = abi_version;
 
-	dev->mmid2ptr = calloc(T4_MAX_NUM_STAG, sizeof(void *));
-	if (!dev->mmid2ptr) {
-		goto err1;
-	}
-	dev->qpid2ptr = calloc(T4_QID_BASE + T4_MAX_NUM_QP, sizeof(void *));
-	if (!dev->qpid2ptr) {
-		goto err2;
-	}
-	dev->cqid2ptr = calloc(T4_MAX_NUM_CQ, sizeof(void *));
-	if (!dev->cqid2ptr)
-		goto err3;
 	PDBG("%s device claimed\n", __FUNCTION__);
 	SLIST_INSERT_HEAD(&devices, dev, list);
 #ifdef STALL_DETECTION
-	{
-		char *c = getenv("CXGB4_STALL_TIMEOUT");
-		if (c) {
-			stall_to = strtol(c, NULL, 0);
-			if (errno || stall_to < 0)
-				stall_to = 0;
-		}
+{
+	char *c = getenv("CXGB4_STALL_TIMEOUT");
+	if (c) {
+		stall_to = strtol(c, NULL, 0);
+		if (errno || stall_to < 0)
+			stall_to = 0;
 	}
+}
 #endif
+{
+	char *c = getenv("CXGB4_MA_WR");
+	if (c) {
+		ma_wr = strtol(c, NULL, 0);
+		if (ma_wr != 1)
+			ma_wr = 0;
+	}
+}
+{
+	char *c = getenv("T5_ENABLE_WC");
+	if (c) {
+		t5_en_wc = strtol(c, NULL, 0);
+		if (t5_en_wc != 1)
+			t5_en_wc = 0;
+	}
+}
+
 	return &dev->ibv_dev;
-err3:
-	free(dev->qpid2ptr);
-err2:
-	free(dev->mmid2ptr);
-err1:
-	free(dev);
-	return NULL;
 }
 
 static __attribute__((constructor)) void cxgb4_register_driver(void)
 {
 	c4iw_page_size = sysconf(_SC_PAGESIZE);
+	c4iw_page_shift = long_log2(c4iw_page_size);
+	c4iw_page_mask = ~(c4iw_page_size - 1);
 	ibv_register_driver("cxgb4", cxgb4_driver_init);
-#ifdef SIM
-{
-	extern void *sim_thread(void *);
-
-	pthread_t *p = malloc(sizeof *p);
-
-	if (p)
-		pthread_create(p, NULL, sim_thread, NULL);
-	sleep(1);
-}
-#endif
 }
 
 #ifdef STATS
