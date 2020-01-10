@@ -1,6 +1,6 @@
 Name: libcxgb4
 Version: 1.2.0
-Release: 3%{?dist}
+Release: 6%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
 License: GPLv2 or BSD
@@ -56,9 +56,22 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
-* Thu Feb 7 2013 Jay Fenlason <fenlason@redhat.com> - 1.2.0-3
-- Include the -alias patch to fix
-  Resolves: rhbz884075 - Package libcxgb4-1.2.0-1.el7 failed RHEL7 RPMdiff testing
+* Mon Mar 03 2014 Doug Ledford <dledford@redhat.com> - 1.2.0-6
+- Our -fno-strict-alias option patch was lost, and we discovered it
+  was lost when I rebuilt the package.  Put it back and rebuild
+  again.
+- Related: bz1062281
+
+* Mon Mar 03 2014 Doug Ledford <dledford@redhat.com> - 1.2.0-5
+- Bump and rebuild against latest libibverbs
+- Related: bz1062281
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 1.2.0-4
+- Mass rebuild 2013-12-27
+
+* Thu Feb 14 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.2.0-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_19_Mass_Rebuild
+
 * Thu Jul 19 2012 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.2.0-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_18_Mass_Rebuild
 
