@@ -1,6 +1,6 @@
 Name: libcxgb4
 Version: 1.3.5
-Release: 2%{?dist}
+Release: 3%{?dist}
 Summary: Chelsio T4 iWARP HCA Userspace Driver
 Group: System Environment/Libraries
 License: GPLv2 or BSD
@@ -50,6 +50,10 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.a
 
 %changelog
+* Fri Jun 05 2015 Doug Ledford <dledford@redhat.com> - 1.3.5-3
+- Bump and rebuild
+- Related: bz1186159
+
 * Tue Dec 23 2014 Doug Ledford <dledford@redhat.com> - 1.3.5-2
 - Rebuild without modprobe file
 - Add requires on rdma package that now contains modprobe file
